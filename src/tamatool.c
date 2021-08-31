@@ -463,7 +463,7 @@ static int handle_sdl_events(SDL_Event *event)
 
 				case SDLK_b:
 					state_find_next_name(save_path);
-					state_save(save_path);
+					state_save(save_path, SDL_FALSE);
 					break;
 
 				case SDLK_n:
