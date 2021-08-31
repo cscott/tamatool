@@ -66,6 +66,8 @@ struct bit_state {
 	SDL_RWops *f;
 	uint8_t buf;
 	uint8_t num_valid;
+	bool_t is_nonzero;
+	uint32_t digit_count;
 };
 
 static uint32_t read_bits(struct bit_state *s, uint8_t num_bits) {
@@ -82,28 +84,37 @@ static uint32_t read_bits(struct bit_state *s, uint8_t num_bits) {
 	return val;
 }
 
-static u13_t read_bits13(struct bit_state *s) {
-	return (u13_t) read_bits(s, 13);
-}
-static u12_t read_bits12(struct bit_state *s) {
-	return (u12_t) read_bits(s, 12);
-}
-static u8_t read_bits8(struct bit_state *s) {
-	return (u8_t) read_bits(s, 8);
-}
-static u5_t read_bits5(struct bit_state *s) {
-	return (u5_t) read_bits(s, 5);
-}
-static u4_t read_bits4(struct bit_state *s) {
-	return (u4_t) read_bits(s, 4);
-}
-static bool_t read_bits1(struct bit_state *s) {
-	return (bool_t) read_bits(s, 1);
+static uint32_t read_small_number(struct bit_state *s) {
+	uint32_t val = 0;
+	uint8_t count_bits = 0;
+	while (read_bits(s, 1) == 1) {
+		val += (1<<count_bits);
+		count_bits = (count_bits==0) ? 1 : (count_bits<<1);
+	}
+	val += read_bits(s, count_bits);
+	return val;
 }
 
-static uint32_t read_small_number(struct bit_state *s) {
-	uint8_t count_bits = read_bits5(s);
-	return read_bits(s, count_bits + 1);
+static uint32_t read_rle(struct bit_state *s, uint8_t num_bits) {
+	uint32_t val = 0;
+	for (uint8_t j=0; num_bits > 0; j++, num_bits--) {
+		if (s->digit_count == 0) {
+			s->is_nonzero = !s->is_nonzero;
+			s->digit_count = read_small_number(s) + 1;
+		}
+		if (s->is_nonzero) {
+			val |= (1 << j);
+		}
+		s->digit_count--;
+	}
+	return val;
+}
+
+static uint32_t read_rle_start(struct bit_state *s, uint8_t num_bits){
+	bool_t first_bit = read_bits(s, 1);
+	s->is_nonzero = !first_bit;
+	s->digit_count = 0;
+	return read_rle(s, num_bits);
 }
 
 static void write_bits(struct bit_state *s, uint32_t val, uint8_t num_bits) {
@@ -121,22 +132,48 @@ static void write_bits(struct bit_state *s, uint32_t val, uint8_t num_bits) {
 }
 
 static void write_small_number(struct bit_state *s, uint32_t val) {
-	// 6 bits for 0, 37 bits for maximum value
 	uint8_t count_bits = 0;
-	for (uint32_t val2 = val; val2 != 0; val2>>=1) {
-		count_bits++;
+	while (val >= (1<<count_bits)) {
+		val -= (1<<count_bits);
+		count_bits = (count_bits == 0) ? 1 : (count_bits << 1);
+		write_bits(s, 1, 1);
 	}
-	if (count_bits == 0) {
-		count_bits++;
-	}
-	write_bits(s, count_bits-1, 5);
+	write_bits(s, 0, 1);
+	// now use count_bits to represent the number.
 	write_bits(s, val, count_bits);
+}
+
+static void write_rle(struct bit_state *s, uint32_t val, uint8_t num_bits) {
+	while (num_bits > 0) {
+		bool_t this_bit = (val & 1);
+		if (this_bit == s->is_nonzero) {
+			s->digit_count++;
+		} else {
+			write_small_number(s, s->digit_count-1);
+			s->is_nonzero = this_bit;
+			s->digit_count = 1;
+		}
+		val >>= 1;
+		num_bits -= 1;
+	}
+}
+
+static void write_rle_start(struct bit_state *s, uint32_t val, uint8_t num_bits) {
+	s->is_nonzero = (val & 1);
+	s->digit_count = 1;
+	write_bits(s, val, 1); // starting state
+	write_rle(s, val>>1, num_bits-1);
 }
 
 static void flush_bits(struct bit_state *s) {
 	if (s->num_valid > 0) {
 		write_bits(s, 0, 8); // flush last bits
 	}
+}
+
+static void write_rle_flush(struct bit_state *s) {
+	write_small_number(s, s->digit_count-1);
+	flush_bits(s);
 }
 
 void state_save(char *path, bool_t small)
@@ -159,41 +196,30 @@ void state_save(char *path, bool_t small)
 	if (small) {
 		write_bits(&bs, *(state->pc), 13);
 		write_bits(&bs, 1, 1); // This marks it as a "small" format file
-		write_bits(&bs, *(state->x), 12);
-		write_bits(&bs, *(state->y), 12);
-		write_bits(&bs, *(state->a), 4);
-		write_bits(&bs, *(state->b), 4);
-		write_bits(&bs, *(state->np), 5);
-		write_bits(&bs, *(state->sp), 8);
-		write_bits(&bs, *(state->flags), 4);
+		write_rle_start(&bs, *(state->x), 12);
+		write_rle(&bs, *(state->y), 12);
+		write_rle(&bs, *(state->a), 4);
+		write_rle(&bs, *(state->b), 4);
+		write_rle(&bs, *(state->np), 5);
+		write_rle(&bs, *(state->sp), 8);
+		write_rle(&bs, *(state->flags), 4);
 		uint32_t tick_base = *(state->tick_counter);
-		write_small_number(&bs, tick_base - *(state->clk_timer_timestamp));
-		write_small_number(&bs, tick_base - *(state->prog_timer_timestamp));
-		write_bits(&bs, *(state->prog_timer_enabled), 1);
-		write_bits(&bs, *(state->prog_timer_data), 8);
-		write_bits(&bs, *(state->prog_timer_rld), 8);
-		write_small_number(&bs, *(state->call_depth));
+		write_rle(&bs, tick_base - *(state->clk_timer_timestamp), 32);
+		write_rle(&bs, tick_base - *(state->prog_timer_timestamp), 32);
+		write_rle(&bs, *(state->prog_timer_enabled), 1);
+		write_rle(&bs, *(state->prog_timer_data), 8);
+		write_rle(&bs, *(state->prog_timer_rld), 8);
+		write_rle(&bs, *(state->call_depth), 32);
 		for (i = 0; i < INT_SLOT_NUM; i++) {
-			write_bits(&bs, state->interrupts[i].factor_flag_reg, 4);
-			write_bits(&bs, state->interrupts[i].mask_reg, 4);
-			write_bits(&bs, state->interrupts[i].triggered, 1);
+			write_rle(&bs, state->interrupts[i].factor_flag_reg, 4);
+			write_rle(&bs, state->interrupts[i].mask_reg, 4);
+			write_rle(&bs, state->interrupts[i].triggered, 1);
 		}
 		// Write out RAM; RLE-encode
 		for (i = 0; i < MEMORY_SIZE; i++) {
-			if (state->memory[i] == 0) {
-				write_bits(&bs, 0, 1);
-				uint32_t n = 1;
-				for ( ; state->memory[i+n] == 0 && (i+n) < MEMORY_SIZE; n++) {
-					/* keep counting */;
-				}
-				write_small_number(&bs, n-1);
-				i += (n-1);
-			} else {
-				write_bits(&bs, 1, 1);
-				write_bits(&bs, state->memory[i], 4);
-			}
+			write_rle(&bs, state->memory[i], 4);
 		}
-		flush_bits(&bs);
+		write_rle_flush(&bs);
 		SDL_RWclose(f);
 		return;
 	}
@@ -359,41 +385,32 @@ void state_load(char *path)
 	}
 
 	struct bit_state bs = { f, 0, 0 };
-	*(state->pc) = read_bits13(&bs);
+	*(state->pc) = read_bits(&bs, 13);
 	// check whether this is a "small" format file
-	if (read_bits1(&bs)) {
+	if (read_bits(&bs, 1)) {
 		// this is "small"
-		*(state->x) = read_bits12(&bs);
-		*(state->y) = read_bits12(&bs);
-		*(state->a) = read_bits4(&bs);
-		*(state->b) = read_bits4(&bs);
-		*(state->np) = read_bits5(&bs);
-		*(state->sp) = read_bits8(&bs);
-		*(state->flags) = read_bits4(&bs);
+		*(state->x) = read_rle_start(&bs, 12);
+		*(state->y) = read_rle(&bs, 12);
+		*(state->a) = read_rle(&bs, 4);
+		*(state->b) = read_rle(&bs, 4);
+		*(state->np) = read_rle(&bs, 5);
+		*(state->sp) = read_rle(&bs, 8);
+		*(state->flags) = read_rle(&bs, 4);
 		uint32_t tick_base = *(state->tick_counter);
-		*(state->clk_timer_timestamp) = tick_base - read_small_number(&bs);
-		*(state->prog_timer_timestamp) = tick_base - read_small_number(&bs);
-		*(state->prog_timer_enabled) = read_bits1(&bs);
-		*(state->prog_timer_data) = read_bits8(&bs);
-		*(state->prog_timer_rld) = read_bits8(&bs);
-		*(state->call_depth) = read_small_number(&bs);
+		*(state->clk_timer_timestamp) = tick_base - read_rle(&bs, 32);
+		*(state->prog_timer_timestamp) = tick_base - read_rle(&bs, 32);
+		*(state->prog_timer_enabled) = read_rle(&bs, 1);
+		*(state->prog_timer_data) = read_rle(&bs, 8);
+		*(state->prog_timer_rld) = read_rle(&bs, 8);
+		*(state->call_depth) = read_rle(&bs, 32);
 		for (i = 0; i < INT_SLOT_NUM; i++) {
-			state->interrupts[i].factor_flag_reg = read_bits4(&bs);
-			state->interrupts[i].mask_reg = read_bits4(&bs);
-			state->interrupts[i].triggered = read_bits1(&bs);
+			state->interrupts[i].factor_flag_reg = read_rle(&bs, 4);
+			state->interrupts[i].mask_reg = read_rle(&bs, 4);
+			state->interrupts[i].triggered = read_rle(&bs, 1);
 		}
 		// Read RAM, RLE-encoded
 		for (i = 0; i < MEMORY_SIZE; i++) {
-			bool_t is_nonzero = read_bits1(&bs);
-			if (is_nonzero) {
-				state->memory[i] = read_bits4(&bs);
-			} else {
-				uint32_t n = read_small_number(&bs) + 1;
-				for (; n > 0; n--) {
-					state->memory[i++] = 0;
-				}
-				i--;
-			}
+			state->memory[i] = read_rle(&bs, 4);
 		}
 		SDL_RWclose(f);
 		return;
