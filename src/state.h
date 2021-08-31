@@ -27,5 +27,6 @@ void state_find_next_name(char *path);
 void state_find_last_name(char *path);
 void state_save(char *path);
 void state_load(char *path);
+void state_debug(void);
 
 #endif /* _STATE_H_ */

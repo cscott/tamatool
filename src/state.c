@@ -174,6 +174,53 @@ void state_save(char *path)
 	SDL_RWclose(f);
 }
 
+void state_debug(void) {
+	state_t *state;
+	state = tamalib_get_state();
+	fprintf(stderr, "PC: 0x%04X\n", *(state->pc));
+	fprintf(stderr, "X:  0x%03X\n", *(state->x));
+	fprintf(stderr, "Y:  0x%03X\n", *(state->y));
+	fprintf(stderr, "A:  0x%01X\n", *(state->a));
+	fprintf(stderr, "B:  0x%01X\n", *(state->b));
+	fprintf(stderr, "NP: 0x%02X\n", *(state->np));
+	fprintf(stderr, "SP: 0x%02X\n", *(state->sp));
+	fprintf(stderr, "FL: 0x%01X\n", *(state->flags));
+	fprintf(stderr, "tick: 0x%04X\n", *(state->tick_counter));
+	fprintf(stderr, "clk:  0x%04X\n", *(state->clk_timer_timestamp));
+	fprintf(stderr, "prog: 0x%04X\n", *(state->prog_timer_timestamp));
+	fprintf(stderr, "EN:   0x%01X\n", *(state->prog_timer_enabled));
+	fprintf(stderr, "DATA: 0x%02X\n", *(state->prog_timer_data));
+	fprintf(stderr, "RLD:  0x%02X\n", *(state->prog_timer_rld));
+	fprintf(stderr, "call depth:  0x%04X\n", *(state->call_depth));
+	fprintf(stderr, "\n");
+	for (int i = 0; i < INT_SLOT_NUM; i++) {
+		fprintf(stderr, "INT %X FLAG 0x%01X\n",
+				i, state->interrupts[i].factor_flag_reg);
+		fprintf(stderr, "INT %X MASK 0x%01X\n",
+				i, state->interrupts[i].mask_reg);
+		fprintf(stderr, "INT %X TRIG 0x%01X\n",
+				i, state->interrupts[i].triggered);
+	}
+	fprintf(stderr, "\n");
+	for (int i = 0; i<MEMORY_SIZE; i+=64) {
+		bool_t saw_nonzero = SDL_FALSE;
+		for (int j = 0; j<64; j++) {
+			if (state->memory[i+j] != 0) {
+				saw_nonzero = SDL_TRUE;
+				break;
+			}
+		}
+		if (!saw_nonzero) {
+			continue; // skip this line, for conciseness
+		}
+		fprintf(stderr, "%03X: ", i);
+		for (int j = 0; j<64; j++) {
+			fprintf(stderr, "%01X", state->memory[i+j]);
+		}
+		fprintf(stderr, "\n");
+	}
+}
+
 void state_load(char *path)
 {
 	SDL_RWops *f;
